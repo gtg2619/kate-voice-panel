@@ -16,7 +16,7 @@ jobs:
           dnf install -y gcc-c++ cmake ninja-build extra-cmake-modules
           qt6-qtbase-devel qt6-qtwebengine-devel qt6-qtwebchannel-devel
           kf6-ktexteditor-devel kf6-kcoreaddons-devel kf6-kxmlgui-devel kf6-ki18n-devel
-          nodejs python3 bubblewrap pipewire-utils xorg-x11-server-Xvfb xorg-x11-xauth
+          nodejs24 nodejs24-bin python3 bubblewrap pipewire-utils xorg-x11-server-Xvfb xorg-x11-xauth
           shadow-utils util-linux dejavu-sans-fonts
       - name: Test as an unprivileged user
         run: |

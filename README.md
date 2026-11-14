@@ -48,8 +48,13 @@ Install Fedora dependencies:
 sudo dnf install kate git ripgrep gcc-c++ cmake ninja-build extra-cmake-modules \
   qt6-qtbase-devel qt6-qtwebengine-devel qt6-qtwebchannel-devel \
   kf6-ktexteditor-devel kf6-kcoreaddons-devel kf6-kxmlgui-devel kf6-ki18n-devel \
-  nodejs pipewire-utils bubblewrap
+  nodejs24 nodejs24-bin pipewire-utils bubblewrap
 ```
+
+Fedora's [Node.js 24 packages](https://packages.fedoraproject.org/pkgs/nodejs24/nodejs24/)
+provide `node-24`; `nodejs24-bin` makes it available as `node`. If another Node version
+already owns `node`, omit `nodejs24-bin` and set `KATE_VOICE_NODE=/usr/bin/node-24`
+in Kate's environment and `KATE_VOICE_TEST_NODE=/usr/bin/node-24` for tests.
 
 Clone and build:
 
