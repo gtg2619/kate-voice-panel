@@ -51,9 +51,11 @@ sudo dnf install kate git ripgrep gcc-c++ cmake ninja-build extra-cmake-modules 
   nodejs pipewire-utils bubblewrap
 ```
 
-From the project directory:
+Clone and build:
 
 ```sh
+git clone https://github.com/gtg2619/kate-voice-panel.git
+cd kate-voice-panel
 cmake -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
   -DCMAKE_INSTALL_PREFIX="$HOME/.local" \
