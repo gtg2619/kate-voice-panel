@@ -1,0 +1,18 @@
+:root { --background: #fff; --foreground: #222; --muted: #777; --accent: #2866ab; --border: #ccc; --fixed-font: monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 8px; color: var(--foreground); background: var(--background); line-height: 1.45; overflow-wrap: anywhere; }
+#empty { color: var(--muted); padding: 8px; }
+.message { display: grid; grid-template-columns: 3.5em minmax(0, 1fr); gap: 8px; margin: 6px 0; }
+header { color: var(--muted); font-size: .85em; padding-top: .1em; }
+p { margin: 0 0 .45em; }
+.body > :last-child { margin-bottom: 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font-family: var(--fixed-font); }
+pre { white-space: pre-wrap; margin: .4em 0; }
+.activity, .timing, .process, .notice, .error { margin: 5px 0 5px calc(3.5em + 8px); font-size: .85em; color: var(--muted); }
+.process pre { font: inherit; white-space: pre-wrap; }
+.process summary { cursor: pointer; }
+.error { color: var(--foreground); border-left: 2px solid var(--border); padding-left: 6px; }
+.katex-display { overflow-x: auto; overflow-y: hidden; }
+img { display: none; }

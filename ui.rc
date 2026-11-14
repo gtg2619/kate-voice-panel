@@ -1,0 +1,8 @@
+<!DOCTYPE gui SYSTEM "kpartgui.dtd">
+<gui name="katevoicepanel" version="1">
+  <MenuBar>
+    <Menu name="tools"><text>&amp;Tools</text>
+      <Action name="voice_panel_show"/>
+    </Menu>
+  </MenuBar>
+</gui>

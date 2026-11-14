@@ -1,0 +1,9 @@
+{
+    "KPlugin": {
+        "Name": "Voice Panel",
+        "Icon": "audio-input-microphone",
+        "Description": "Read-only voice conversations about your code, powered by DeepSeek",
+        "Version": "0.1.0",
+        "License": "MIT"
+    }
+}
