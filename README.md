@@ -5,6 +5,8 @@
 A read-only voice companion for Kate, powered by DeepSeek Harness (DSH).
 Ask about the code under the cursor while continuing to read or navigate the editor.
 Replies are brief, lightly formatted, and optionally spoken aloud.
+The default answer budget is one or two sentences, up to 60 English words or
+100 Chinese characters; explicit requests for detail allow longer replies.
 
 - A large voice switch and eight settings in a fixed four-row, two-column layout.
   The controls occupy less than half the panel; only the transcript scrolls.
@@ -25,7 +27,8 @@ The screenshot uses an example conversation in the actual panel.
 ## Requirements
 
 Linux with PipeWire, Kate/Qt 6, KDE Frameworks 6, Node.js 24.5+, `dsh`, and
-`bubblewrap`. The plugin does not install agent packages or change DSH configuration.
+`bubblewrap`. FFmpeg is needed for speech speeds other than 1×.
+The plugin does not install agent packages or change DSH configuration.
 Install DSH separately using its [official instructions](https://github.com/deepseek-ai/deepseek-harness).
 The DSH SDK composition is tested with `@deepseek-ai/dsh` 0.2.2-rc.1.
 
@@ -48,7 +51,7 @@ Install Fedora dependencies:
 sudo dnf install kate git ripgrep gcc-c++ cmake ninja-build extra-cmake-modules \
   qt6-qtbase-devel qt6-qtwebengine-devel qt6-qtwebchannel-devel \
   kf6-ktexteditor-devel kf6-kcoreaddons-devel kf6-kxmlgui-devel kf6-ki18n-devel \
-  nodejs24 nodejs24-bin pipewire-utils bubblewrap
+  nodejs24 nodejs24-bin pipewire-utils bubblewrap ffmpeg-free
 ```
 
 Fedora's [Node.js 24 packages](https://packages.fedoraproject.org/pkgs/nodejs24/nodejs24/)
@@ -91,14 +94,24 @@ Turn **Voice input** on, speak, then pause. The default trigger is −35 dBFS wi
 shorter than 200 ms are discarded; utterances are bounded to 110 seconds. This is
 volume detection, not a wake-word or speech-classification model.
 
-Choose the microphone, output, Stella/Tide voice, playback volume, and whether to
-read replies aloud. Audio devices follow the system default unless explicitly set.
-Settings persist; the microphone starts off when a new panel instance is created.
+Choose the microphone, output, Stella/Tide voice, volume, speed, and whether to read
+replies aloud. Audio devices follow the system default unless explicitly set.
+**Speed** ranges from 0.5× to 2× and applies to the next reply. DeepSeek generates the
+speech; local FFmpeg tempo adjustment preserves its pitch. At 1×, no converter is used.
+
+Parameters save automatically after edits and restore across Kate restarts, including
+custom device IDs. They are stored in `~/.config/kate-voice-panel/settings.conf`
+(`$XDG_CONFIG_HOME` overrides the directory). The voice switch is not saved:
+microphone input starts off in each new panel instance.
 
 **Hiding the panel keeps listening enabled.** Esc returns to the editor; the panel
 also hides automatically if it becomes shorter than the controls require. Turn the
 voice switch off to cancel listening, processing, and playback. Disabling the plugin
 or exiting Kate also stops its processes. Use **New conversation** to clear the chat.
+
+During playback, **Skip speech** stops the current audio and resumes enabled input
+without clearing the conversation. **Ctrl+Alt+Shift+Space** also works while the
+panel is hidden. Customize **Skip Voice Reply** in Kate's keyboard shortcut settings.
 
 Context is captured when speech begins. The workspace is Kate's active project,
 the active file's directory, or HOME. Changing workspace starts a fresh DSH session.

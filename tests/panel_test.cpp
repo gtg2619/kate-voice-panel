@@ -10,6 +10,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QEventLoop>
 #include <QFile>
 #include <QJsonDocument>
@@ -19,6 +20,8 @@
 #include <QScopeGuard>
 #include <QScrollArea>
 #include <QSettings>
+#include <QSlider>
+#include <QProgressBar>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QSplitter>
@@ -28,7 +31,16 @@
 #include <QVBoxLayout>
 #include <QWebEnginePage>
 #include <QWebEngineView>
+#include <QWindow>
 #include <memory>
+
+// Kate's ToolView uses its current size as its preferred size.
+class ToolView : public QWidget {
+public:
+    using QWidget::QWidget;
+    QSize sizeHint() const override { return size(); }
+    QSize minimumSizeHint() const override { return {160, 160}; }
+};
 
 class Host : public QObject
 {
@@ -39,6 +51,7 @@ public:
     QObject *project = nullptr;
     QPointer<QWidget> tool;
     QWidget *parentWidget = nullptr;
+    QSplitter *dock = nullptr;
     QUrl opened;
     QIcon toolIcon;
     int hideCount = 0;
@@ -54,7 +67,8 @@ public Q_SLOTS:
     bool hideToolView(QWidget *widget) { ++hideCount; widget->hide(); return true; }
     KXMLGUIFactory *guiFactory() { return nullptr; }
     QWidget *createToolView(KTextEditor::Plugin *, const QString &, KTextEditor::MainWindow::ToolViewPosition, const QIcon &icon, const QString &) {
-        toolIcon = icon; tool = new QWidget(parentWidget); auto box = new QVBoxLayout(tool); box->setContentsMargins(0, 0, 0, 0);
+        toolIcon = icon; tool = new ToolView(parentWidget); auto box = new QVBoxLayout(tool); box->setContentsMargins(0, 0, 0, 0);
+        if (dock) dock->addWidget(tool);
         if (parentWidget) parentWidget->layout()->addWidget(tool); tool->hide(); return tool;
     }
 };
@@ -86,7 +100,7 @@ private Q_SLOTS:
         qputenv("PATH", m_temp->path().toUtf8() + ":" + m_path);
         QSettings(QStringLiteral("kate-voice-panel"), QStringLiteral("settings")).clear();
     }
-    void cleanup() { qputenv("PATH", m_path); qunsetenv("KATE_VOICE_NODE"); qunsetenv("KATE_VOICE_TEST_SPEECH"); }
+    void cleanup() { qputenv("PATH", m_path); qunsetenv("KATE_VOICE_NODE"); qunsetenv("KATE_VOICE_TEST_SPEECH"); qunsetenv("KATE_VOICE_TEST_PLAYBACK"); }
     void settingsAndSplitLayout() {
         Host host; KTextEditor::MainWindow window(&host); VoicePanel panel(&window); show(panel);
         auto split = panel.findChild<QSplitter *>(QStringLiteral("voiceSplit")); QVERIFY(split); QCOMPARE(split->count(), 2);
@@ -99,7 +113,12 @@ private Q_SLOTS:
         QVERIFY(panel.findChildren<QScrollArea *>().isEmpty());
         auto grid = qobject_cast<QGridLayout *>(panel.findChild<QWidget *>(QStringLiteral("voiceSettings"))->layout());
         QVERIFY(grid); QCOMPARE(grid->rowCount(), 4); QCOMPARE(grid->columnCount(), 2);
-        QVERIFY(panel.findChild<QToolButton *>(QStringLiteral("voiceEnabled"))->height() >= panel.requiredHeight() - 8);
+        auto enabled = panel.findChild<QToolButton *>(QStringLiteral("voiceEnabled"));
+        auto level = panel.findChild<QProgressBar *>(QStringLiteral("voiceLevel"));
+        QVERIFY(enabled->height() >= panel.requiredHeight() - 20);
+        QTRY_COMPARE(level->width(), enabled->width());
+        QTRY_VERIFY(level->mapTo(&panel, QPoint()).y() >= enabled->mapTo(&panel, QPoint(0, enabled->height())).y());
+        QCOMPARE(panel.findChild<QDoubleSpinBox *>(QStringLiteral("voiceSpeed"))->value(), 1.0);
         QTRY_VERIFY(js(panel, QStringLiteral("typeof window.receive === 'function'")).toBool());
         QCOMPARE(js(panel, QStringLiteral("document.querySelectorAll('input, textarea, [contenteditable]').length")).toInt(), 0);
     }
@@ -132,6 +151,7 @@ private Q_SLOTS:
         std::unique_ptr<KTextEditor::View> view(doc->createView(nullptr, &window)); host.view = view.get();
         doc->setText(QStringLiteral("original")); view->setSelection({0, 0, 0, 8});
         VoicePanel panel(&window); show(panel); QSignalSpy sent(&panel, &VoicePanel::requestSent);
+        panel.findChild<QDoubleSpinBox *>(QStringLiteral("voiceSpeed"))->setValue(1.5);
         qputenv("KATE_VOICE_TEST_SPEECH", "1");
         panel.findChild<QToolButton *>(QStringLiteral("voiceEnabled"))->setChecked(true);
         QTRY_VERIFY(js(panel, QStringLiteral("document.body.textContent.includes('Hearing speech')")).toBool());
@@ -139,6 +159,7 @@ private Q_SLOTS:
         QTRY_VERIFY(!ask(sent).isEmpty());
         QCOMPARE(ask(sent).value("context").toObject().value("activeFile").toObject().value("selection").toString(), QStringLiteral("original"));
         QVERIFY(!ask(sent).value("audio").toString().isEmpty());
+        QCOMPARE(ask(sent).value("speed").toDouble(), 1.5);
         QTRY_VERIFY(js(panel, QStringLiteral("document.body.textContent.includes('The formula')")).toBool());
         QVERIFY(js(panel, QStringLiteral("document.querySelector('.katex') !== null")).toBool());
         QVERIFY(js(panel, QStringLiteral("document.querySelector('.file-link') !== null")).toBool());
@@ -162,6 +183,166 @@ private Q_SLOTS:
         }
         VoicePanel next(&window); QVERIFY(!next.findChild<QToolButton *>(QStringLiteral("voiceEnabled"))->isChecked());
         QCOMPARE(next.findChild<QSpinBox *>(QStringLiteral("voiceThreshold"))->value(), -42);
+    }
+    void parametersPersistWithoutConversationAndRestoreAfterClosing() {
+        Host host; KTextEditor::MainWindow window(&host);
+        {
+            VoicePanel panel(&window); show(panel); QSignalSpy sent(&panel, &VoicePanel::requestSent);
+            auto microphone = panel.findChild<QComboBox *>(QStringLiteral("voiceMicrophone"));
+            QTRY_VERIFY(microphone->findData(QStringLiteral("test.mic")) >= 0);
+            microphone->setCurrentIndex(microphone->findData(QStringLiteral("test.mic")));
+            // Editing a selected item's text must save the new device ID, not the old item's data.
+            microphone->setEditText(QStringLiteral("custom.mic"));
+            panel.findChild<QComboBox *>(QStringLiteral("voiceSpeaker"))->setEditText(QStringLiteral("custom.speaker"));
+            panel.findChild<QSpinBox *>(QStringLiteral("voiceThreshold"))->setValue(-44);
+            panel.findChild<QSpinBox *>(QStringLiteral("voiceSilence"))->setValue(1400);
+            panel.findChild<QComboBox *>(QStringLiteral("voiceVoice"))->setCurrentIndex(1);
+            panel.findChild<QSlider *>(QStringLiteral("voiceVolume"))->setValue(63);
+            panel.findChild<QCheckBox *>(QStringLiteral("voiceReadAloud"))->setChecked(false);
+            panel.findChild<QDoubleSpinBox *>(QStringLiteral("voiceSpeed"))->setValue(1.6);
+            const auto settingsPath = QSettings(QStringLiteral("kate-voice-panel"), QStringLiteral("settings")).fileName();
+            // Read the on-disk INI under a separate QSettings identity, avoiding the shared native cache.
+            const auto disk = [&settingsPath](const QString &key) { return QSettings(settingsPath, QSettings::IniFormat).value(key); };
+            QTRY_COMPARE(disk(QStringLiteral("speed")).toDouble(), 1.6);
+            QCOMPARE(disk(QStringLiteral("threshold")).toInt(), -44);
+            QCOMPARE(disk(QStringLiteral("silence")).toInt(), 1400);
+            QCOMPARE(disk(QStringLiteral("voice")).toString(), QStringLiteral("tide"));
+            QCOMPARE(disk(QStringLiteral("microphone")).toString(), QStringLiteral("custom.mic"));
+            QCOMPARE(disk(QStringLiteral("speaker")).toString(), QStringLiteral("custom.speaker"));
+            QCOMPARE(disk(QStringLiteral("volume")).toInt(), 63);
+            QCOMPARE(disk(QStringLiteral("speak")).toBool(), false);
+            QVERIFY(sent.isEmpty());
+            // Closing within the debounce interval still flushes the final edit.
+            panel.findChild<QDoubleSpinBox *>(QStringLiteral("voiceSpeed"))->setValue(1.7);
+        }
+        VoicePanel next(&window); show(next);
+        auto microphone = next.findChild<QComboBox *>(QStringLiteral("voiceMicrophone"));
+        QTRY_VERIFY(microphone->findData(QStringLiteral("test.mic")) >= 0);
+        QCOMPARE(microphone->currentData().toString(), QStringLiteral("custom.mic"));
+        QCOMPARE(next.findChild<QComboBox *>(QStringLiteral("voiceSpeaker"))->currentData().toString(), QStringLiteral("custom.speaker"));
+        QCOMPARE(next.findChild<QSpinBox *>(QStringLiteral("voiceThreshold"))->value(), -44);
+        QCOMPARE(next.findChild<QSpinBox *>(QStringLiteral("voiceSilence"))->value(), 1400);
+        QCOMPARE(next.findChild<QComboBox *>(QStringLiteral("voiceVoice"))->currentData().toString(), QStringLiteral("tide"));
+        QCOMPARE(next.findChild<QSlider *>(QStringLiteral("voiceVolume"))->value(), 63);
+        QVERIFY(!next.findChild<QCheckBox *>(QStringLiteral("voiceReadAloud"))->isChecked());
+        QCOMPARE(next.findChild<QDoubleSpinBox *>(QStringLiteral("voiceSpeed"))->value(), 1.7);
+        QVERIFY(!next.findChild<QToolButton *>(QStringLiteral("voiceEnabled"))->isChecked());
+    }
+    void olderPanelCannotOverwriteAnotherWindowsSettings() {
+        Host host; KTextEditor::MainWindow window(&host);
+        {
+            VoicePanel older(&window);
+            {
+                VoicePanel newer(&window);
+                newer.findChild<QDoubleSpinBox *>(QStringLiteral("voiceSpeed"))->setValue(1.8);
+            }
+            older.findChild<QSpinBox *>(QStringLiteral("voiceThreshold"))->setValue(-48);
+        }
+        VoicePanel next(&window);
+        QCOMPARE(next.findChild<QDoubleSpinBox *>(QStringLiteral("voiceSpeed"))->value(), 1.8);
+        QCOMPARE(next.findChild<QSpinBox *>(QStringLiteral("voiceThreshold"))->value(), -48);
+    }
+    void dockCanShrinkAfterGrowingAndHideBelowControls() {
+        Host host; QSplitter dock(Qt::Vertical); dock.setChildrenCollapsible(false);
+        dock.resize(1000, 900); auto editor = new QWidget(&dock); editor->setMinimumHeight(50); host.dock = &dock;
+        KTextEditor::MainWindow window(&host);
+        QPluginLoader loader(QStringLiteral(PLUGIN_FILE)); auto factory = qobject_cast<KPluginFactory *>(loader.instance()); QVERIFY(factory);
+        auto plugin = factory->create<KTextEditor::Plugin>(&host); auto pluginView = plugin->createView(&window);
+        const auto cleanup = qScopeGuard([&] { delete pluginView; delete plugin; });
+        dock.show(); QVERIFY(QTest::qWaitForWindowExposed(&dock));
+        dynamic_cast<KXMLGUIClient *>(pluginView)->actionCollection()->action(QStringLiteral("voice_panel_show"))->trigger();
+        QTest::qWait(50); // Finish the queued initial dock restoration before simulating a user drag.
+        auto panel = host.tool->findChild<QWidget *>(QStringLiteral("kateVoicePanel")); QVERIFY(panel);
+        const int required = panel->findChild<QWidget *>(QStringLiteral("voiceSettings"))->layout()->minimumSize().height() + 8;
+        const int small = required + 50;
+        for (int i = 0; i < 3; ++i) {
+            dock.setSizes({250, 640}); QTRY_VERIFY(host.tool->height() > 550);
+            QCOMPARE(panel->sizeHint().height(), required);
+            QVERIFY(host.tool->minimumHeight() < required);
+            dock.setSizes({900 - small, small}); QTRY_VERIFY(host.tool->height() < small + 10);
+            QVERIFY(host.tool->isVisible());
+        }
+        panel->findChild<QToolButton *>(QStringLiteral("voiceEnabled"))->setChecked(true);
+        dock.setSizes({900 - required + 20, required - 20});
+        QTRY_VERIFY(host.hideCount > 0);
+        QVERIFY(panel->findChild<QToolButton *>(QStringLiteral("voiceEnabled"))->isChecked());
+        dynamic_cast<KXMLGUIClient *>(pluginView)->actionCollection()->action(QStringLiteral("voice_panel_show"))->trigger();
+        QTRY_VERIFY(host.tool->isVisible() && panel->height() >= required);
+        QTest::qWait(100); QVERIFY(host.tool->isVisible());
+    }
+    void skipSpeechKeepsConversationAndResumesInput_data() {
+        QTest::addColumn<bool>("shortcut");
+        QTest::newRow("button") << false;
+        QTest::newRow("shortcut-with-hidden-panel") << true;
+    }
+    void waylandDockDragRestoresInput_data() {
+        QTest::addColumn<bool>("hideDuringDrag");
+        QTest::newRow("release") << false;
+        QTest::newRow("hide-during-drag") << true;
+    }
+    void waylandDockDragRestoresInput() {
+        if (!QGuiApplication::platformName().startsWith(QLatin1String("wayland"))) QSKIP("Wayland input-region regression");
+        QFETCH(bool, hideDuringDrag);
+        Host host; QSplitter dock(Qt::Vertical); dock.resize(1000, 800);
+        new QWidget(&dock); host.dock = &dock;
+        KTextEditor::MainWindow window(&host);
+        QPluginLoader loader(QStringLiteral(PLUGIN_FILE)); auto factory = qobject_cast<KPluginFactory *>(loader.instance()); QVERIFY(factory);
+        auto plugin = factory->create<KTextEditor::Plugin>(&host); auto pluginView = plugin->createView(&window);
+        const auto cleanup = qScopeGuard([&] { delete pluginView; delete plugin; });
+        dock.show(); QVERIFY(QTest::qWaitForWindowExposed(&dock));
+        auto showAction = dynamic_cast<KXMLGUIClient *>(pluginView)->actionCollection()->action(QStringLiteral("voice_panel_show"));
+        showAction->trigger(); dock.setSizes({400, 400});
+        auto panel = host.tool->findChild<QWidget *>(QStringLiteral("kateVoicePanel")); QVERIFY(panel);
+        auto surface = panel->windowHandle(); QVERIFY(surface);
+        QTest::mousePress(dock.handle(1), Qt::LeftButton);
+        QVERIFY(surface->flags().testFlag(Qt::WindowTransparentForInput));
+        if (hideDuringDrag) host.hideToolView(host.tool);
+        else QTest::mouseRelease(dock.handle(1), Qt::LeftButton);
+        QVERIFY(!surface->flags().testFlag(Qt::WindowTransparentForInput));
+        if (hideDuringDrag) { QTest::mouseRelease(dock.handle(1), Qt::LeftButton); showAction->trigger(); }
+        auto enabled = panel->findChild<QToolButton *>(QStringLiteral("voiceEnabled"));
+        QTest::mouseClick(enabled, Qt::LeftButton); QVERIFY(enabled->isChecked());
+    }
+    void skipSpeechKeepsConversationAndResumesInput() {
+        QFETCH(bool, shortcut);
+        Host host; QWidget container; container.setLayout(new QVBoxLayout); container.resize(1000, 600); host.parentWidget = &container;
+        auto editor = new QLineEdit(&container); container.layout()->addWidget(editor);
+        KTextEditor::MainWindow window(&host);
+        QPluginLoader loader(QStringLiteral(PLUGIN_FILE)); auto factory = qobject_cast<KPluginFactory *>(loader.instance()); QVERIFY(factory);
+        auto plugin = factory->create<KTextEditor::Plugin>(&host); auto pluginView = plugin->createView(&window);
+        const auto cleanup = qScopeGuard([&] { delete pluginView; delete plugin; });
+        auto actions = dynamic_cast<KXMLGUIClient *>(pluginView)->actionCollection();
+        container.show(); QVERIFY(QTest::qWaitForWindowExposed(&container));
+        actions->action(QStringLiteral("voice_panel_show"))->trigger();
+        auto panel = host.tool->findChild<QWidget *>(QStringLiteral("kateVoicePanel")); QVERIFY(panel);
+        auto skip = panel->findChild<QToolButton *>(QStringLiteral("voiceSkipSpeech")); QVERIFY(skip);
+        auto action = actions->action(QStringLiteral("voice_panel_skip_speech")); QVERIFY(action); QVERIFY(!action->isEnabled());
+        QSignalSpy sent(panel, SIGNAL(requestSent(QJsonObject))); QVERIFY(sent.isValid());
+        qputenv("KATE_VOICE_TEST_PLAYBACK", "1"); qputenv("KATE_VOICE_TEST_SPEECH", "1");
+        auto enabled = panel->findChild<QToolButton *>(QStringLiteral("voiceEnabled")); enabled->setChecked(true);
+        QTRY_VERIFY(action->isEnabled()); QVERIFY(skip->isVisible());
+        qunsetenv("KATE_VOICE_TEST_SPEECH");
+        QSignalSpy events(panel, SIGNAL(transcriptEvent(QString))); QVERIFY(events.isValid());
+        if (shortcut) {
+            host.hideToolView(host.tool); container.activateWindow(); QVERIFY(QTest::qWaitForWindowActive(&container));
+            editor->setFocus(); QTRY_VERIFY(editor->hasFocus());
+            QTest::keyClick(editor, Qt::Key_Space, Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier);
+        } else QTest::mouseClick(skip, Qt::LeftButton);
+        QTRY_VERIFY(!action->isEnabled()); QVERIFY(skip->isHidden()); QVERIFY(enabled->isChecked());
+        const auto listening = [&events] {
+            for (const auto &row : events) {
+                const auto event = QJsonDocument::fromJson(row.at(0).toString().toUtf8()).object();
+                if (event.value("state") == QLatin1String("listening")) return true;
+            }
+            return false;
+        };
+        QTRY_VERIFY(listening());
+        // No stop/reset command: skipping playback must keep the model's conversation.
+        QCOMPARE(sent.size(), 1); QCOMPARE(sent.first().at(0).toJsonObject().value("type").toString(), QStringLiteral("ask"));
+        // Another utterance is accepted after skipping, even with the panel hidden.
+        qputenv("KATE_VOICE_TEST_SPEECH", "1");
+        enabled->setChecked(false); enabled->setChecked(true);
+        QTRY_COMPARE(sent.size(), 2);
     }
     void staleEventsAndUnsafeLinksAreIgnored() {
         Host host; KTextEditor::MainWindow window(&host); VoicePanel panel(&window); show(panel);

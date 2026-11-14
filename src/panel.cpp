@@ -9,6 +9,7 @@
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -28,6 +29,8 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStyle>
+#include <QStylePainter>
+#include <QStyleOptionToolButton>
 #include <QToolButton>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -40,6 +43,29 @@
 #include <QWebEngineView>
 
 namespace {
+class VoiceInputButton : public QToolButton {
+public:
+    using QToolButton::QToolButton;
+    QSize sizeHint() const override {
+        return {qMax(96, fontMetrics().horizontalAdvance(i18n("Voice input")) + 24), 120};
+    }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QStylePainter painter(this);
+        QStyleOptionToolButton option; initStyleOption(&option);
+        option.text.clear(); option.icon = QIcon();
+        painter.drawComplexControl(QStyle::CC_ToolButton, option);
+        const int line = fontMetrics().height(), iconSide = 36;
+        const int top = (height() - iconSide - 10 - 2 * line - 4) / 2;
+        const auto mode = isEnabled() ? QIcon::Normal : QIcon::Disabled;
+        icon().paint(&painter, (width() - iconSide) / 2, top, iconSide, iconSide, Qt::AlignCenter, mode, isChecked() ? QIcon::On : QIcon::Off);
+        painter.setPen(palette().color(QPalette::ButtonText));
+        painter.drawText(QRect(0, top + iconSide + 10, width(), line), Qt::AlignCenter, i18n("Voice input"));
+        painter.setPen(palette().color(QPalette::PlaceholderText));
+        painter.drawText(QRect(0, top + iconSide + 14 + line, width(), line), Qt::AlignCenter, isChecked() ? i18n("On") : i18n("Off"));
+    }
+};
+
 class OfflineRequests : public QWebEngineUrlRequestInterceptor {
 public:
     using QWebEngineUrlRequestInterceptor::QWebEngineUrlRequestInterceptor;
@@ -62,8 +88,9 @@ QIcon icon(const QString &name, QStyle::StandardPixmap fallback) {
     return QIcon::fromTheme(name, QApplication::style()->standardIcon(fallback));
 }
 QString device(QComboBox *box) {
-    const auto value = box->currentData().toString();
-    return box->currentIndex() >= 0 ? value : box->currentText().trimmed();
+    if (box->currentIndex() >= 0 && box->currentText() == box->itemText(box->currentIndex()))
+        return box->currentData().toString();
+    return box->currentText().trimmed();
 }
 QSettings preferences() { return QSettings(QStringLiteral("kate-voice-panel"), QStringLiteral("settings")); }
 void stopProcess(QProcess &process) {
@@ -86,18 +113,25 @@ VoicePanel::VoicePanel(KTextEditor::MainWindow *window, QWidget *parent)
     m_split->setChildrenCollapsible(false); outer->addWidget(m_split);
     m_controls = new QWidget(m_split);
     auto controlsLayout = new QHBoxLayout(m_controls); controlsLayout->setContentsMargins(0, 0, 4, 0); controlsLayout->setAlignment(Qt::AlignTop);
-    m_autoInput = new QToolButton(this); m_autoInput->setObjectName(QStringLiteral("voiceEnabled"));
+    m_autoInput = new VoiceInputButton(this); m_autoInput->setObjectName(QStringLiteral("voiceEnabled"));
     m_autoInput->setCheckable(true); m_autoInput->setText(i18n("Voice input\nOff"));
     m_autoInput->setIcon(icon(QStringLiteral("audio-input-microphone"), QStyle::SP_MediaVolume));
     m_autoInput->setIconSize(QSize(40, 40)); m_autoInput->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     m_autoInput->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     m_autoInput->setToolTip(i18n("Enable voice input. Speak above the threshold, then pause to send. Turn off to stop."));
-    controlsLayout->addWidget(m_autoInput);
+    auto inputLayout = new QVBoxLayout; inputLayout->setContentsMargins(0, 0, 0, 0); inputLayout->setSpacing(4);
+    inputLayout->addWidget(m_autoInput);
+    controlsLayout->addLayout(inputLayout);
     auto right = new QWidget(m_split); auto rightLayout = new QVBoxLayout(right); rightLayout->setContentsMargins(0, 0, 0, 0); rightLayout->setSpacing(0);
     auto toolbar = new QHBoxLayout;
     m_scope = new QLabel(this); m_scope->setObjectName(QStringLiteral("voiceScope"));
     m_scope->setTextInteractionFlags(Qt::TextSelectableByMouse); m_scope->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     toolbar->addWidget(m_scope, 1);
+    m_skipSpeech = new QToolButton(this); m_skipSpeech->setObjectName(QStringLiteral("voiceSkipSpeech"));
+    m_skipSpeech->setText(i18n("Skip speech")); m_skipSpeech->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_skipSpeech->setIcon(icon(QStringLiteral("media-skip-forward"), QStyle::SP_MediaSkipForward));
+    m_skipSpeech->setToolTip(i18n("Stop reading this reply and resume enabled voice input. The conversation is kept."));
+    toolbar->addWidget(m_skipSpeech); connect(m_skipSpeech, &QToolButton::clicked, this, &VoicePanel::skipSpeech);
     m_new = new QToolButton(this); m_new->setText(i18n("New conversation")); m_new->setToolTip(m_new->text());
     m_new->setObjectName(QStringLiteral("voiceNew")); m_new->setIcon(icon(QStringLiteral("document-new"), QStyle::SP_FileIcon));
     toolbar->addWidget(m_new); rightLayout->addLayout(toolbar);
@@ -123,7 +157,10 @@ VoicePanel::VoicePanel(KTextEditor::MainWindow *window, QWidget *parent)
     m_threshold->setAccessibleName(i18n("Speech threshold")); m_silence->setAccessibleName(i18n("Silence before sending"));
 
     m_level = new QProgressBar(this); m_level->setRange(-60, 0); m_level->setValue(-60); m_level->setTextVisible(false);
-    m_level->setAccessibleName(i18n("Microphone level"));
+    m_level->setObjectName(QStringLiteral("voiceLevel")); m_level->setFixedHeight(6);
+    m_level->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_level->setAccessibleName(i18n("Microphone level")); m_level->setToolTip(i18n("Microphone level"));
+    inputLayout->addWidget(m_level); inputLayout->addStretch();
     m_voice = new QComboBox(this); m_voice->setObjectName(QStringLiteral("voiceVoice"));
     m_voice->addItem(i18n("Stella"), QStringLiteral("stella")); m_voice->addItem(i18n("Tide"), QStringLiteral("tide"));
     m_voice->setCurrentIndex(qMax(0, m_voice->findData(saved.value(QStringLiteral("voice"), QStringLiteral("stella")))));
@@ -136,20 +173,26 @@ VoicePanel::VoicePanel(KTextEditor::MainWindow *window, QWidget *parent)
         if (!name.isEmpty()) { box->addItem(name, name); box->setCurrentIndex(1); }
     }
     const auto inputChanged = [this] {
-        saveSettings();
         if (m_autoInput->isChecked() && !m_busy) { pauseListening(); QTimer::singleShot(0, this, &VoicePanel::startListening); }
     };
     connect(m_microphone, &QComboBox::activated, this, inputChanged);
     connect(m_microphone->lineEdit(), &QLineEdit::editingFinished, this, inputChanged);
     m_volume = new QSlider(Qt::Horizontal, this); m_volume->setRange(0, 100);
+    m_volume->setObjectName(QStringLiteral("voiceVolume"));
     m_volume->setValue(saved.value(QStringLiteral("volume"), 80).toInt()); m_volume->setAccessibleName(i18n("Playback volume"));
     m_readAloud = new QCheckBox(i18n("Enabled"), this); m_readAloud->setAccessibleName(i18n("Read replies aloud"));
+    m_readAloud->setObjectName(QStringLiteral("voiceReadAloud"));
     m_readAloud->setChecked(saved.value(QStringLiteral("speak"), true).toBool());
+    m_speed = new QDoubleSpinBox(this); m_speed->setObjectName(QStringLiteral("voiceSpeed"));
+    m_speed->setRange(0.5, 2.0); m_speed->setSingleStep(0.1); m_speed->setDecimals(1); m_speed->setSuffix(QStringLiteral("×"));
+    m_speed->setValue(saved.value(QStringLiteral("speed"), 1.0).toDouble());
+    m_speed->setAccessibleName(i18n("Speech speed"));
+    m_speed->setToolTip(i18n("Playback speed for the next reply. Keeps the original pitch; speeds other than 1× require FFmpeg."));
     cell(0, 0, i18n("Microphone"), m_microphone); cell(0, 1, i18n("Output"), m_speaker);
     cell(1, 0, i18n("Threshold"), m_threshold); cell(1, 1, i18n("Silence"), m_silence);
     cell(2, 0, i18n("Voice"), m_voice); cell(2, 1, i18n("Volume"), m_volume);
-    cell(3, 0, i18n("Input level"), m_level); cell(3, 1, i18n("Read replies"), m_readAloud);
-    controlsLayout->addWidget(m_settings, 1);
+    cell(3, 0, i18n("Speed"), m_speed); cell(3, 1, i18n("Read replies"), m_readAloud);
+    controlsLayout->addWidget(m_settings, 1, Qt::AlignTop);
     connect(m_new, &QToolButton::clicked, this, &VoicePanel::reset);
 
     m_transcript = new QWebEngineView(this); m_transcript->setObjectName(QStringLiteral("voiceTranscript"));
@@ -171,7 +214,7 @@ VoicePanel::VoicePanel(KTextEditor::MainWindow *window, QWidget *parent)
     connect(m_autoInput, &QToolButton::toggled, this, [this](bool enabled) {
         if (enabled) startListening();
         else { stop(); }
-        saveSettings(); updateControls();
+        updateControls();
     });
     connect(&m_listener, &QProcess::readyReadStandardOutput, this, [this] {
         const auto audio = m_listener.readAllStandardOutput();
@@ -226,6 +269,7 @@ VoicePanel::VoicePanel(KTextEditor::MainWindow *window, QWidget *parent)
         if (!m_closing) receive({{"type", "error"}, {"text", i18n("Voice bridge stopped. Check Node.js 24.5+ and DSH, then send again.")}});
         publish({{"type", "status"}, {"state", "idle"}});
     });
+    connect(&m_playback, &QProcess::stateChanged, this, &VoicePanel::updateControls);
     connect(&m_playback, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (!m_closing && error == QProcess::FailedToStart) receive({{"type", "error"}, {"text", i18n("Cannot start pw-play. The reply is available in the transcript.")}});
         updateControls();
@@ -239,6 +283,8 @@ VoicePanel::VoicePanel(KTextEditor::MainWindow *window, QWidget *parent)
         if (code != 0) return;
         const auto nodes = QJsonDocument::fromJson(m_devices.readAllStandardOutput()).array();
         const auto mic = device(m_microphone), speaker = device(m_speaker);
+        const QSignalBlocker blockMic(m_microphone), blockSpeaker(m_speaker);
+        const QSignalBlocker blockMicEdit(m_microphone->lineEdit()), blockSpeakerEdit(m_speaker->lineEdit());
         for (auto box : {m_microphone, m_speaker}) { box->clear(); box->addItem(i18n("System default"), QString()); }
         for (const auto &node : nodes) {
             const auto props = node.toObject().value("info").toObject().value("props").toObject();
@@ -252,6 +298,17 @@ VoicePanel::VoicePanel(KTextEditor::MainWindow *window, QWidget *parent)
             box->setCurrentIndex(box->findData(selected));
         }
     });
+    // Save only changed keys: an older Kate window must not overwrite another window's settings.
+    m_saveTimer.setSingleShot(true); m_saveTimer.setInterval(200);
+    connect(&m_saveTimer, &QTimer::timeout, this, &VoicePanel::saveSettings);
+    connect(m_threshold, &QSpinBox::valueChanged, this, [this](int value) { queueSetting(QStringLiteral("threshold"), value); });
+    connect(m_silence, &QSpinBox::valueChanged, this, [this](int value) { queueSetting(QStringLiteral("silence"), value); });
+    connect(m_speed, &QDoubleSpinBox::valueChanged, this, [this](double value) { queueSetting(QStringLiteral("speed"), value); });
+    connect(m_volume, &QSlider::valueChanged, this, [this](int value) { queueSetting(QStringLiteral("volume"), value); });
+    connect(m_readAloud, &QCheckBox::toggled, this, [this](bool value) { queueSetting(QStringLiteral("speak"), value); });
+    connect(m_voice, &QComboBox::currentIndexChanged, this, [this] { queueSetting(QStringLiteral("voice"), m_voice->currentData()); });
+    connect(m_microphone, &QComboBox::currentTextChanged, this, [this] { queueSetting(QStringLiteral("microphone"), device(m_microphone)); });
+    connect(m_speaker, &QComboBox::currentTextChanged, this, [this] { queueSetting(QStringLiteral("speaker"), device(m_speaker)); });
     updateControls(); updateTheme();
     QTimer::singleShot(0, this, &VoicePanel::refreshDevices);
     m_transcript->load(QUrl(QStringLiteral("qrc:/voicepanel/web/index.html")));
@@ -302,12 +359,24 @@ QJsonObject VoicePanel::editorContext() const
     return context;
 }
 
+void VoicePanel::queueSetting(const QString &key, const QVariant &value)
+{
+    m_pendingSettings.insert(key, value);
+    m_saveTimer.start();
+}
+
 void VoicePanel::saveSettings()
 {
+    m_saveTimer.stop();
+    if (m_pendingSettings.isEmpty()) return;
     auto saved = preferences();
-    saved.setValue("threshold", m_threshold->value()); saved.setValue("silence", m_silence->value());
-    saved.setValue("voice", m_voice->currentData()); saved.setValue("microphone", device(m_microphone));
-    saved.setValue("speaker", device(m_speaker)); saved.setValue("volume", m_volume->value()); saved.setValue("speak", m_readAloud->isChecked());
+    for (auto it = m_pendingSettings.cbegin(); it != m_pendingSettings.cend(); ++it) saved.setValue(it.key(), it.value());
+    saved.sync();
+    if (saved.status() == QSettings::NoError) { m_pendingSettings.clear(); m_settingsError = false; }
+    else if (!m_closing && !m_settingsError) {
+        m_settingsError = true;
+        publish({{"type", "error"}, {"text", i18n("Cannot save voice settings. Check write access to %1.", saved.fileName())}});
+    }
 }
 
 void VoicePanel::refreshDevices()
@@ -325,7 +394,7 @@ void VoicePanel::startBridge()
         publish({{"type", "error"}, {"text", message}}); publish({{"type", "status"}, {"state", "idle"}});
     };
     if (!m_directory.isValid()) { failed(i18n("Cannot create a private voice directory.")); return; }
-    for (const auto name : {"main.mjs", "deepseek.mjs", "dsh.mjs", "profile.mjs", "readonly.mjs", "tools.mjs"}) {
+    for (const auto name : {"main.mjs", "deepseek.mjs", "dsh.mjs", "profile.mjs", "readonly.mjs", "tools.mjs", "audio.mjs"}) {
         QFile source(QStringLiteral(":/voicepanel/bridge/") + QLatin1String(name)); QFile target(m_directory.filePath(QLatin1String(name)));
         if (!source.open(QIODevice::ReadOnly) || !target.open(QIODevice::WriteOnly) || target.write(source.readAll()) < 0) {
             failed(i18n("Cannot prepare the voice bridge.")); return;
@@ -358,7 +427,7 @@ void VoicePanel::ask(const QString &text, const QString &audio)
     m_request = QUuid::createUuid().toString(QUuid::WithoutBraces);
     publish({{"type", "status"}, {"state", "starting"}});
     send({{"type", "ask"}, {"request", m_request}, {"text", text}, {"audio", audio}, {"cwd", cwd}, {"context", context},
-        {"voice", m_voice->currentData().toString()},
+        {"voice", m_voice->currentData().toString()}, {"speed", m_speed->value()},
         {"speak", m_readAloud->isChecked()}});
 }
 
@@ -383,6 +452,12 @@ void VoicePanel::reset()
     if (listening) m_autoInput->setChecked(true);
 }
 
+void VoicePanel::skipSpeech()
+{
+    // Killing playback triggers the normal completion path; keep the DSH session and microphone switch.
+    if (m_playback.state() != QProcess::NotRunning) m_playback.kill();
+}
+
 void VoicePanel::play(const QString &path)
 {
     if (QFileInfo(path).canonicalFilePath() != QFileInfo(m_directory.filePath(QStringLiteral("reply.wav"))).canonicalFilePath()) return;
@@ -394,6 +469,7 @@ void VoicePanel::play(const QString &path)
 
 void VoicePanel::receive(const QJsonObject &event)
 {
+    if (m_closing) return;
     if (event.contains("request") && event.value("request").toString() != m_request) return;
     const auto type = event.value("type").toString();
     if (type == QLatin1String("ready")) {
@@ -425,6 +501,8 @@ void VoicePanel::rendererReady()
 void VoicePanel::updateControls()
 {
     const bool playing = m_playback.state() != QProcess::NotRunning;
+    m_skipSpeech->setVisible(playing);
+    Q_EMIT speechPlaybackChanged(playing);
     m_autoInput->setText(m_autoInput->isChecked() ? i18n("Voice input\nOn") : i18n("Voice input\nOff"));
     m_settings->setEnabled(!m_busy && !playing); m_new->setEnabled(!m_busy);
     const auto path = workspace(); const auto name = QFileInfo(path).fileName();
@@ -459,6 +537,7 @@ void VoicePanel::changeEvent(QEvent *event)
 
 int VoicePanel::requiredHeight() const
 {
+    if (!m_settings || !m_settings->layout()) return 200;
     return m_settings->layout()->minimumSize().height() + layout()->contentsMargins().top() + layout()->contentsMargins().bottom();
 }
 
@@ -470,7 +549,7 @@ void VoicePanel::scheduleSpaceCheck()
         m_spaceCheckPending = false;
         if (!isVisible()) return;
         const int controlsHeight = m_settings->layout()->minimumSize().height();
-        m_settings->setFixedHeight(controlsHeight); m_autoInput->setFixedHeight(controlsHeight);
+        m_settings->setFixedHeight(controlsHeight); m_autoInput->setFixedHeight(controlsHeight - m_level->height() - 4);
         const int limit = qMax(1, (m_split->width() - m_split->handleWidth()) * 49 / 100);
         m_controls->setMaximumWidth(limit);
         const auto sizes = m_split->sizes();

@@ -4,6 +4,7 @@ import {resolve, dirname, join} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {DeepSeek, credentials, safeError} from './deepseek.mjs';
 import {Dsh} from './dsh.mjs';
+import {adjustSpeed, speechSpeed} from './audio.mjs';
 
 export class VoiceBridge {
   constructor(env, emit, {api, createDsh, audioDirectory} = {}) {
@@ -39,6 +40,7 @@ export class VoiceBridge {
     };
     let outcome = 'completed';
     try {
+      const speed = speechSpeed(command.speed);
       this.api ||= new DeepSeek(this.env.DEEPSEEK_API_KEY);
       let text = String(command.text || '').trim();
       if (command.audio) {
@@ -70,7 +72,10 @@ export class VoiceBridge {
       emit({type: 'message', role: 'assistant', id, text: answer});
       if (command.speak !== false) {
         try {
-          const audio = await phase('synthesizing', () => this.api.speak(answer, command.voice || 'stella', abort.signal));
+          const audio = await phase('synthesizing', async () => {
+            const original = await this.api.speak(answer, command.voice || 'stella', abort.signal);
+            return original ? adjustSpeed(original, speed, abort.signal, this.env) : original;
+          });
           if (audio && current()) {
             const path = join(this.directory, 'reply.wav');
             await writeFile(path, audio, {mode: 0o600}); await chmod(path, 0o600);

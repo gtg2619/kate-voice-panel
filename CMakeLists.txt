@@ -16,7 +16,7 @@ target_sources(katevoicepanel PRIVATE src/plugin.cpp src/panel.cpp src/filelink.
 target_link_libraries(katevoicepanel PRIVATE KF6::TextEditor KF6::CoreAddons KF6::XmlGui KF6::I18n Qt6::WebEngineWidgets Qt6::WebChannel)
 target_compile_definitions(katevoicepanel PRIVATE TRANSLATION_DOMAIN="katevoicepanel")
 file(GLOB_RECURSE PANEL_ASSETS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/web/*")
-set(BRIDGE_ASSETS bridge/main.mjs bridge/deepseek.mjs bridge/dsh.mjs bridge/profile.mjs bridge/readonly.mjs bridge/tools.mjs)
+set(BRIDGE_ASSETS bridge/main.mjs bridge/deepseek.mjs bridge/dsh.mjs bridge/profile.mjs bridge/readonly.mjs bridge/tools.mjs bridge/audio.mjs)
 qt_add_resources(katevoicepanel voice_assets PREFIX "/voicepanel" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${PANEL_ASSETS} ${BRIDGE_ASSETS} ui.rc)
 
 include(CTest)

@@ -27,7 +27,7 @@ if (!process.env.KATE_VOICE_LIVE_PROXY_READY) {
     await writeFile(join(directory, 'README.txt'), source);
     const question = await api.speak('Read the readme file and tell me the project code name in one sentence.', 'stella');
     await writeFile(join(directory, 'recording.wav'), question);
-    await bridge.command({type: 'ask', request: 'live', cwd: directory, audio: join(directory, 'recording.wav'), voice: 'tide',
+    await bridge.command({type: 'ask', request: 'live', cwd: directory, audio: join(directory, 'recording.wav'), voice: 'tide', speed: 1.5,
       context: {workspace: directory, openFiles: [{path: 'README.txt'}]}});
     const errors = events.filter(event => event.type === 'error');
     assert.deepEqual(errors, [], JSON.stringify(errors));
@@ -36,10 +36,29 @@ if (!process.env.KATE_VOICE_LIVE_PROXY_READY) {
     const speech = events.find(event => event.type === 'audio'); assert.ok(speech);
     assert.ok(inspectWav(await readFile(speech.path)).duration > 0);
     assert.equal(await readFile(join(directory, 'README.txt'), 'utf8'), source);
+    const code = 'export function lookup(items, id) { return items.find(item => item.id === id) ?? null; }';
+    await writeFile(join(directory, 'lookup.js'), code);
+    const brevity = [];
+    for (const [language, question] of [
+      ['English', 'What does the selected function do?'],
+      ['Chinese', 'Answer in Chinese: why use ?? null in this function?'],
+    ]) {
+      events.length = 0;
+      await bridge.command({type: 'ask', request: language, cwd: directory, text: question, speak: false,
+        context: {workspace: directory, activeFile: {path: 'lookup.js', selection: code, excerpt: code}}});
+      assert.ok(!events.some(event => event.type === 'error'));
+      const reply = events.find(event => event.role === 'assistant')?.text; assert.ok(reply);
+      assert.doesNotMatch(reply, /(^|\n)\s*(?:#{1,6}\s|[-*]\s|\d+\.\s)|```/);
+      assert.ok(reply.trim().split(/\n\s*\n/).length <= 2);
+      if (language === 'English') assert.ok(reply.trim().split(/\s+/).length <= 60, reply);
+      else { const count = (reply.match(/\p{Script=Han}/gu) || []).length; assert.ok(count > 0 && count <= 100, reply); }
+      brevity.push({language, reply});
+    }
+    assert.equal(await readFile(join(directory, 'lookup.js'), 'utf8'), code);
     const search = JSON.parse(await api.search('KDE Kate official editor')); assert.ok(search.length);
     assert.ok((await api.page('https://kate-editor.org/')).length > 100);
-    console.log(JSON.stringify({voiceRoundTrip: true, fixedModel: 'deepseek-flash', effort: 'max',
-      recognized: events.find(event => event.role === 'user')?.text, answer, searchResults: search.length,
+    console.log(JSON.stringify({voiceRoundTrip: true, speechSpeed: 1.5, fixedModel: 'deepseek-flash', effort: 'max',
+      answer, brevity, searchResults: search.length,
       webFetch: true, workspaceUnchanged: true}, null, 2));
   } catch (error) { console.error(safeError(error, env.DEEPSEEK_API_KEY)); process.exitCode = 1; }
   finally { await bridge.stop(); await rm(directory, {recursive: true, force: true}); }

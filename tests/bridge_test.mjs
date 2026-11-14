@@ -10,6 +10,7 @@ import {VoiceBridge} from '../bridge/main.mjs';
 import {Dsh} from '../bridge/dsh.mjs';
 import {createProfile, SYSTEM_PROMPT} from '../bridge/profile.mjs';
 import {apply as registerTools} from '../bridge/tools.mjs';
+import {adjustSpeed} from '../bridge/audio.mjs';
 
 function wav(seconds = .1, rate = 16000) {
   const data = Buffer.alloc(Math.round(seconds * rate) * 2 + 44);
@@ -64,6 +65,52 @@ test('TTS sends supported voice and format; only final prose is spoken', async (
   }});
   assert.ok(await api.speak('Read [source](https://example.com).\n```bash\nrm -rf /\n```', 'tide'));
   await assert.rejects(api.speak('hi', 'unknown'), /Stella or Tide/);
+});
+test('normal speed needs no FFmpeg and invalid speeds fail before running a converter', async () => {
+  const audio = wav();
+  assert.equal(await adjustSpeed(audio, 1, undefined, {PATH: '/nonexistent'}), audio);
+  for (const speed of [0, 0.4, 2.1, NaN, Infinity, '1.5', null])
+    await assert.rejects(adjustSpeed(audio, speed), /between 0.5× and 2×/);
+  await assert.rejects(adjustSpeed(audio, 1.5, undefined, {PATH: '/nonexistent'}), /Install FFmpeg/);
+});
+test('real FFmpeg changes duration without shifting the tone or sample rate', async () => {
+  const audio = wav(2, 24000);
+  for (let i = 0; i < 48000; ++i) audio.writeInt16LE(Math.round(12000 * Math.sin(2 * Math.PI * 440 * i / 24000)), 44 + 2 * i);
+  for (const speed of [0.5, 1.5, 2]) {
+    const result = await adjustSpeed(audio, speed);
+    const info = inspectWav(result);
+    assert.equal(info.rate, 24000); assert.equal(info.channels, 1);
+    assert.ok(Math.abs(info.duration - 2 / speed) < 0.1, `Speed ${speed}: duration ${info.duration}`);
+    let offset = 12;
+    while (result.toString('ascii', offset, offset + 4) !== 'data') {
+      const size = result.readUInt32LE(offset + 4); offset += 8 + size + size % 2;
+    }
+    const pcm = result.subarray(offset + 8); let crossings = 0;
+    // Exclude the filter's leading/trailing overlap from the frequency estimate.
+    const start = 2400, end = pcm.length / 2 - 2400;
+    for (let i = start + 1; i < end; ++i)
+      if ((pcm.readInt16LE(i * 2) >= 0) !== (pcm.readInt16LE((i - 1) * 2) >= 0)) crossings++;
+    const frequency = crossings * info.rate / (2 * (end - start));
+    assert.ok(Math.abs(frequency - 440) < 5, `Speed ${speed}: frequency ${frequency}`);
+  }
+});
+test('cancelling speed adjustment kills the converter and strips credentials', async t => {
+  const dir = await directory(t), marker = join(dir, 'started.json');
+  await writeFile(join(dir, 'ffmpeg'), `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(marker)}, JSON.stringify({pid:process.pid, key:process.env.DEEPSEEK_API_KEY, proxy:process.env.HTTPS_PROXY}));setInterval(()=>{},1000);`, {mode: 0o755});
+  const controller = new AbortController();
+  const result = adjustSpeed(wav(), 1.5, controller.signal, {PATH: dir, DEEPSEEK_API_KEY: 'private', HTTPS_PROXY: 'private'});
+  const rejected = assert.rejects(result, {name: 'AbortError'});
+  let started;
+  for (let i = 0; i < 200 && !started; ++i) {
+    try { started = JSON.parse(await readFile(marker, 'utf8')); } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
+  }
+  controller.abort(); await rejected;
+  assert.ok(started, 'converter started'); assert.equal(started.key, undefined); assert.equal(started.proxy, undefined);
+  for (let i = 0; i < 100; ++i) {
+    try { process.kill(started.pid, 0); } catch (error) { assert.equal(error.code, 'ESRCH'); return; }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail('converter survived cancellation');
 });
 test('web tools use DeepSeek endpoints with bounded queries and credential-free URLs', async () => {
   const calls = [];
@@ -130,7 +177,9 @@ test('runtime composition includes exactly the intended tools and no inherited p
   const rows = JSON.parse(await readFile(join(profile, 'cordis.patch.yml'), 'utf8'))[0].insert;
   assert.ok(rows.some(row => row.id === 'voice-tools'));
   assert.ok(!rows.some(row => /tool-bash|tool-fs|mcp|terminal|persona|workspace-instructions/.test(row.name)));
-  assert.match(SYSTEM_PROMPT, /one to three short sentences/); assert.match(SYSTEM_PROMPT, /Never edit/);
+  const prompt = rows.find(row => row.id === 'system-prompt').config.personaPrefix;
+  assert.equal(prompt, SYSTEM_PROMPT); assert.match(prompt, /hard ceiling of 60 English words or 100 Chinese characters/);
+  assert.match(prompt, /ONE or TWO short sentences/); assert.match(prompt, /Never edit/);
   const tools = []; const previous = process.env.DEEPSEEK_API_KEY; process.env.DEEPSEEK_API_KEY = 'test-key';
   try { registerTools({tools: {register: tool => tools.push(tool)}}, {workspace: dir}); }
   finally { if (previous === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = previous; }
@@ -179,6 +228,28 @@ test('voice flow recognizes, reasons, synthesizes and emits a playable private f
   assert.equal((await stat(join(dir, 'reply.wav'))).mode & 0o777, 0o600);
   assert.deepEqual(mock.events.filter(e => e.type === 'status').map(e => e.state), ['recognizing', 'thinking', 'synthesizing', 'idle']);
   assert.ok(mock.events.every(e => e.request === 'r1'));
+});
+test('selected speed reaches the reply audio and converter failure leaves the transcript readable', async t => {
+  const dir = await directory(t), mock = mockRuntime(); mock.api.speak = async () => wav(2);
+  const bridge = new VoiceBridge({PATH: process.env.PATH}, event => mock.events.push(event), {...mock, audioDirectory: dir});
+  t.after(() => bridge.stop());
+  await bridge.command({type: 'ask', text: 'Question', cwd: dir, speed: 2});
+  assert.ok(mock.events.some(event => event.type === 'audio'));
+  assert.ok(inspectWav(await readFile(join(dir, 'reply.wav'))).duration < 1.1);
+  mock.events.length = 0; bridge.env.PATH = '/nonexistent';
+  await bridge.command({type: 'ask', text: 'Question', cwd: dir, speed: 1.5});
+  assert.ok(mock.events.some(event => event.role === 'assistant'));
+  assert.ok(mock.events.some(event => /Install FFmpeg/.test(event.text || '')));
+  assert.ok(!mock.events.some(event => event.type === 'audio'));
+  assert.equal(mock.events.at(-1).state, 'idle');
+});
+test('invalid speed is rejected before a provider request', async t => {
+  const dir = await directory(t), mock = mockRuntime();
+  const bridge = new VoiceBridge({}, event => mock.events.push(event), {...mock, audioDirectory: dir});
+  t.after(() => bridge.stop());
+  await bridge.command({type: 'ask', text: 'Question', cwd: dir, speed: 'bad'});
+  assert.equal(mock.agents.length, 0); assert.equal(mock.spoken(), 0);
+  assert.ok(mock.events.some(event => /Speech speed/.test(event.text || '')));
 });
 test('follow-up turns reuse DSH; model stays flash/max and workspace changes start a fresh session', async t => {
   const dir = await directory(t), mock = mockRuntime();

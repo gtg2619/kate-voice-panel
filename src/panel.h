@@ -5,6 +5,7 @@
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QVariantMap>
 #include "voiceactivity.h"
 
 class QToolButton;
@@ -15,6 +16,7 @@ class QCheckBox;
 class QLabel;
 class QSplitter;
 class QSpinBox;
+class QDoubleSpinBox;
 class QProgressBar;
 class QWebEngineView;
 namespace KTextEditor { class MainWindow; class View; }
@@ -26,6 +28,7 @@ public:
     explicit VoicePanel(KTextEditor::MainWindow *window, QWidget *parent = nullptr);
     ~VoicePanel() override;
     QString workspace() const;
+    QSize sizeHint() const override { return {800, requiredHeight()}; }
     QSize minimumSizeHint() const override { return {0, 0}; }
     int requiredHeight() const;
     QJsonObject editorContext() const;
@@ -33,11 +36,13 @@ public:
     void openLink(const QString &href);
     void stop();
     void reset();
+    void skipSpeech();
     void receive(const QJsonObject &event);
 Q_SIGNALS:
     void transcriptEvent(const QString &json);
     void insufficientSpace();
     void requestSent(const QJsonObject &request);
+    void speechPlaybackChanged(bool playing);
 protected:
     void changeEvent(QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -50,6 +55,7 @@ private:
     void scheduleSpaceCheck();
     void updateControls();
     void saveSettings();
+    void queueSetting(const QString &key, const QVariant &value);
     void refreshDevices();
     void play(const QString &path);
     void startListening();
@@ -58,12 +64,14 @@ private:
     KTextEditor::MainWindow *m_window;
     QWebEngineView *m_transcript = nullptr;
     QToolButton *m_new;
-    QWidget *m_settings;
+    QToolButton *m_skipSpeech;
+    QWidget *m_settings = nullptr;
     QWidget *m_controls;
     QSplitter *m_split;
     QToolButton *m_autoInput;
     QSpinBox *m_threshold;
     QSpinBox *m_silence;
+    QDoubleSpinBox *m_speed;
     QProgressBar *m_level;
     QComboBox *m_voice;
     QComboBox *m_microphone;
@@ -75,6 +83,8 @@ private:
     QProcess m_playback;
     QProcess m_devices;
     QProcess m_listener;
+    QTimer m_saveTimer;
+    QVariantMap m_pendingSettings;
     VoiceActivity m_activity;
     QTemporaryDir m_directory;
     QByteArray m_buffer;
@@ -89,6 +99,7 @@ private:
     bool m_busy = false;
     bool m_closing = false;
     bool m_spaceCheckPending = false;
+    bool m_settingsError = false;
 };
 
 class VoiceTranscriptBridge : public QObject

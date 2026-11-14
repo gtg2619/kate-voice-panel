@@ -13,7 +13,7 @@ signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 if name == "pw-dump":
     print(json.dumps([{"info": {"props": {"media.class": "Audio/Source", "node.name": "test.mic", "node.description": "Test microphone"}}}]))
 elif name == "pw-play":
-    time.sleep(.2)
+    time.sleep(30 if os.environ.get("KATE_VOICE_TEST_PLAYBACK") else .2)
 elif "--raw" in sys.argv:
     # Optional finite speech followed by silence drives automatic input tests.
     if os.environ.get("KATE_VOICE_TEST_SPEECH") == "1":
